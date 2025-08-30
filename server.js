@@ -11,7 +11,7 @@ const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
     cors: {
-        origin: ["https://cashearnersofficial.xyz/quiz-game-frontend/index.html"], // Update to your frontend domain
+        origin: ["https://cashearnersofficial.xyz/quiz-game-frontend"], // Update to your frontend domain
         methods: ["GET", "POST"]
     }
 });
