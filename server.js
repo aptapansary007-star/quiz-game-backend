@@ -2,264 +2,220 @@ const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
 const cors = require('cors');
+const winston = require('winston');
 const RoomManager = require('./game/roomManager');
 const GameLogic = require('./game/gameLogic');
+const { isValidPlayerName, isValidRoomId } = require('./utils/helpers');
 
 const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
-  }
+    cors: {
+        origin: ["https://cashearnersofficial.xyz/quiz-game-frontend/index.html"], // Update to your frontend domain
+        methods: ["GET", "POST"]
+    }
 });
 
 const PORT = process.env.PORT || 3000;
+
+// Logger
+const logger = winston.createLogger({
+    transports: [
+        new winston.transports.File({ filename: 'game.log' }),
+        new winston.transports.Console()
+    ]
+});
 
 // Middleware
 app.use(cors());
 app.use(express.json());
 
-// Initialize managers
+// Managers
 const roomManager = new RoomManager();
 const gameLogic = new GameLogic();
 
-// Health check endpoint
+// In-memory leaderboard (MongoDB-ready)
+let leaderboard = [];
+
+// Health check
 app.get('/', (req, res) => {
-  res.json({ 
-    message: 'Quiz Game Backend Running!',
-    timestamp: new Date().toISOString(),
-    activeRooms: roomManager.getActiveRoomsCount()
-  });
+    res.json({
+        message: 'Premium Quiz Game Backend Running!',
+        timestamp: new Date().toISOString(),
+        activeRooms: roomManager.getActiveRoomsCount()
+    });
 });
 
-// Socket connection handling
+// Socket handling
 io.on('connection', (socket) => {
-  console.log(`Player connected: ${socket.id}`);
+    logger.info(`Player connected: ${socket.id}`);
 
-  // Create new room
-  socket.on('create-room', (data) => {
-    try {
-      const { playerName, betAmount = 0 } = data;
-      const room = roomManager.createRoom(socket.id, playerName, betAmount);
-      
-      socket.join(room.id);
-      socket.emit('room-created', {
-        roomId: room.id,
-        playerName: playerName,
-        players: room.players
-      });
-      
-      console.log(`Room created: ${room.id} by ${playerName}`);
-    } catch (error) {
-      socket.emit('error', { message: 'Failed to create room' });
-    }
-  });
-
-  // Join existing room
-  socket.on('join-room', (data) => {
-    try {
-      const { roomId, playerName, betAmount = 0 } = data;
-      const room = roomManager.joinRoom(roomId, socket.id, playerName, betAmount);
-      
-      if (room) {
-        socket.join(roomId);
-        
-        // Notify all players in room
-        io.to(roomId).emit('player-joined', {
-          players: room.players,
-          newPlayer: playerName
-        });
-        
-        socket.emit('room-joined', {
-          roomId: roomId,
-          players: room.players
-        });
-        
-        console.log(`${playerName} joined room: ${roomId}`);
-      } else {
-        socket.emit('error', { message: 'Room not found or full' });
-      }
-    } catch (error) {
-      socket.emit('error', { message: 'Failed to join room' });
-    }
-  });
-
-  // Start game
-  socket.on('start-game', (data) => {
-    try {
-      const { roomId } = data;
-      const room = roomManager.getRoom(roomId);
-      
-      if (room && room.players.length >= 2 && room.status === 'waiting') {
-        room.status = 'countdown';
-        
-        // Start countdown
-        let countdown = 5;
-        io.to(roomId).emit('game-starting', { countdown });
-        
-        const countdownInterval = setInterval(() => {
-          countdown--;
-          if (countdown > 0) {
-            io.to(roomId).emit('game-starting', { countdown });
-          } else {
-            io.to(roomId).emit('game-starting', { countdown: 0 }); // ✅ FIXED: 0 broadcast
-            clearInterval(countdownInterval);
-            startGameplay(roomId);
-          }
-        }, 1000);
-        
-        console.log(`Game starting in room: ${roomId}`);
-      } else {
-        socket.emit('error', { message: 'Cannot start game' });
-      }
-    } catch (error) {
-      socket.emit('error', { message: 'Failed to start game' });
-    }
-  });
-
-  // Submit answer
-  socket.on('submit-answer', (data) => {
-    try {
-      const { roomId, answer, timeTaken } = data;
-      const room = roomManager.getRoom(roomId);
-      
-      if (room && room.status === 'playing') {
-        const isCorrect = gameLogic.checkAnswer(room.currentQuestion, answer);
-        
-        // Update player score
-        const player = room.players.find(p => p.id === socket.id);
-        if (player && isCorrect) {
-          player.score++;
-        }
-        
-        // Send result to player
-        socket.emit('answer-result', {
-          isCorrect,
-          correctAnswer: room.currentQuestion.correct,
-          playerAnswer: answer,
-          newScore: player ? player.score : 0
-        });
-        
-        // Send next question after delay
-        setTimeout(() => {
-          if (room.status === 'playing') {
-            const question = gameLogic.generateQuestion();
-            room.currentQuestion = question;
-            room.questionNumber++;
-            
-            io.to(roomId).emit('new-question', {
-              question: question.question,
-              options: question.options,
-              questionNumber: room.questionNumber
+    socket.on('create-room', (data) => {
+        try {
+            const { playerName, betAmount = 0 } = data;
+            if (!isValidPlayerName(playerName)) throw new Error('Name must be 3-20 characters');
+            if (betAmount < 0 || betAmount > 10000) throw new Error('Invalid bet amount');
+            const room = roomManager.createRoom(socket.id, playerName, betAmount);
+            socket.join(room.id);
+            socket.emit('room-created', {
+                roomId: room.id,
+                playerName,
+                players: room.players
             });
-          }
-        }, 500);
-        
-      }
-    } catch (error) {
-      socket.emit('error', { message: 'Failed to submit answer' });
-    }
-  });
-
-  // Handle disconnect
-  socket.on('disconnect', () => {
-    console.log(`Player disconnected: ${socket.id}`);
-    
-    // Find and remove player from any room
-    const rooms = roomManager.getAllRooms();
-    rooms.forEach(room => {
-      const playerIndex = room.players.findIndex(p => p.id === socket.id);
-      if (playerIndex !== -1) {
-        const playerName = room.players[playerIndex].name;
-        room.players.splice(playerIndex, 1);
-        
-        // Notify remaining players
-        if (room.players.length > 0) {
-          io.to(room.id).emit('player-left', {
-            players: room.players,
-            leftPlayer: playerName
-          });
-        } else {
-          // Remove empty room
-          roomManager.removeRoom(room.id);
+            logger.info(`Room created: ${room.id} by ${playerName}`);
+        } catch (error) {
+            socket.emit('error', { code: 'INVALID_INPUT', message: error.message });
         }
-      }
     });
-  });
 
-  // Function to start actual gameplay
-  function startGameplay(roomId) {
-    const room = roomManager.getRoom(roomId);
-    if (!room) return;
-    
-    room.status = 'playing';
-    room.gameTimer = 30;
-    room.questionNumber = 1;
-    
-    // Generate first question
-    const question = gameLogic.generateQuestion();
-    room.currentQuestion = question;
-    
-    // Send first question
-    io.to(roomId).emit('game-started', {
-      question: question.question,
-      options: question.options,
-      gameTimer: room.gameTimer,
-      questionNumber: room.questionNumber
+    socket.on('join-room', (data) => {
+        try {
+            const { roomId, playerName, betAmount = 0 } = data;
+            if (!isValidRoomId(roomId)) throw new Error('Invalid room ID');
+            if (!isValidPlayerName(playerName)) throw new Error('Name must be 3-20 characters');
+            if (betAmount < 0 || betAmount > 10000) throw new Error('Invalid bet amount');
+            const room = roomManager.joinRoom(roomId.toUpperCase(), socket.id, playerName, betAmount);
+            if (!room) throw new Error('Room not found or full');
+            socket.join(roomId);
+            io.to(roomId).emit('player-joined', { players: room.players, newPlayer: playerName });
+            socket.emit('room-joined', { roomId, players: room.players });
+            logger.info(`${playerName} joined room: ${roomId}`);
+        } catch (error) {
+            socket.emit('error', { code: 'JOIN_FAILED', message: error.message });
+        }
     });
-    
-    // Start game timer
-    const gameInterval = setInterval(() => {
-      room.gameTimer--;
-      
-      io.to(roomId).emit('timer-update', { timeLeft: room.gameTimer });
-      
-      if (room.gameTimer <= 0) {
-        clearInterval(gameInterval);
-        endGame(roomId);
-      }
-    }, 1000);
-    
-    // Store interval reference
-    room.gameInterval = gameInterval;
-  }
 
-  // Function to end game
-  function endGame(roomId) {
-    const room = roomManager.getRoom(roomId);
-    if (!room) return;
-    
-    room.status = 'finished';
-    
-    // Calculate results
-    const results = gameLogic.calculateResults(room.players);
-    
-    // Send results to all players
-    io.to(roomId).emit('game-ended', {
-      results,
-      players: room.players
+    socket.on('start-game', (data) => {
+        try {
+            const { roomId } = data;
+            if (!isValidRoomId(roomId)) throw new Error('Invalid room ID');
+            const room = roomManager.getRoom(roomId);
+            if (!room || room.players.length < 2) throw new Error('Need at least 2 players');
+            if (room.status !== 'waiting') throw new Error('Game already started');
+            room.status = 'countdown';
+            let countdown = 5;
+            io.to(roomId).emit('game-starting', { countdown });
+            const countdownInterval = setInterval(() => {
+                countdown--;
+                if (countdown > 0) {
+                    io.to(roomId).emit('game-starting', { countdown });
+                } else {
+                    clearInterval(countdownInterval);
+                    startGameplay(roomId);
+                }
+            }, 1000);
+            logger.info(`Game starting in room: ${roomId}`);
+        } catch (error) {
+            socket.emit('error', { code: 'START_FAILED', message: error.message });
+        }
     });
-    
-    console.log(`Game ended in room: ${roomId}`, results);
-    
-    // Clean up room after 30 seconds
-    setTimeout(() => {
-      roomManager.removeRoom(roomId);
-    }, 30000);
-  }
+
+    socket.on('submit-answer', (data) => {
+        try {
+            const { roomId, answer, timeTaken } = data;
+            if (!isValidRoomId(roomId)) throw new Error('Invalid room ID');
+            const room = roomManager.getRoom(roomId);
+            if (!room || room.status !== 'playing' || room.waitingForNextQuestion) return;
+            const isCorrect = gameLogic.checkAnswer(room.currentQuestion, answer);
+            const player = room.players.find(p => p.id === socket.id);
+            if (player && isCorrect) {
+                player.score += 1 + (timeTaken < 10 ? 1 : 0); // Time bonus
+            }
+            socket.emit('answer-result', {
+                isCorrect,
+                correctAnswer: room.currentQuestion.correct,
+                playerAnswer: answer,
+                newScore: player ? player.score : 0
+            });
+            io.to(roomId).emit('player-scores', { players: room.players }); // Live scores
+            room.waitingForNextQuestion = true;
+            setTimeout(() => {
+                if (room.status === 'playing') {
+                    room.currentQuestion = gameLogic.generateQuestion(room.questionNumber);
+                    room.questionNumber++;
+                    io.to(roomId).emit('new-question', {
+                        question: room.currentQuestion.question,
+                        options: room.currentQuestion.options,
+                        questionNumber: room.questionNumber,
+                        type: room.currentQuestion.type
+                    });
+                    room.waitingForNextQuestion = false;
+                }
+            }, 2000);
+        } catch (error) {
+            socket.emit('error', { code: 'ANSWER_FAILED', message: 'Failed to submit answer' });
+        }
+    });
+
+    socket.on('fetch-leaderboard', (data, callback) => {
+        callback(leaderboard);
+    });
+
+    socket.on('disconnect', () => {
+        logger.info(`Player disconnected: ${socket.id}`);
+        const rooms = roomManager.getAllRooms();
+        rooms.forEach(room => {
+            const playerIndex = room.players.findIndex(p => p.id === socket.id);
+            if (playerIndex !== -1) {
+                const playerName = room.players[playerIndex].name;
+                room.players.splice(playerIndex, 1);
+                if (room.players.length > 0) {
+                    io.to(room.id).emit('player-left', { players: room.players, leftPlayer: playerName });
+                    io.to(room.id).emit('player-scores', { players: room.players });
+                } else {
+                    roomManager.removeRoom(room.id);
+                }
+            }
+        });
+    });
+
+    function startGameplay(roomId) {
+        const room = roomManager.getRoom(roomId);
+        if (!room) return;
+        room.status = 'playing';
+        room.gameTimer = 120;
+        room.questionNumber = 1;
+        room.currentQuestion = gameLogic.generateQuestion(1);
+        io.to(roomId).emit('game-started', {
+            question: room.currentQuestion.question,
+            options: room.currentQuestion.options,
+            gameTimer: room.gameTimer,
+            questionNumber: room.questionNumber,
+            type: room.currentQuestion.type
+        });
+        io.to(roomId).emit('player-scores', { players: room.players });
+        const gameInterval = setInterval(() => {
+            room.gameTimer--;
+            io.to(roomId).emit('timer-update', { timeLeft: room.gameTimer });
+            if (room.gameTimer <= 0) {
+                clearInterval(gameInterval);
+                endGame(roomId);
+            }
+        }, 1000);
+        room.gameInterval = gameInterval;
+    }
+
+    function endGame(roomId) {
+        const room = roomManager.getRoom(roomId);
+        if (!room) return;
+        room.status = 'finished';
+        const results = gameLogic.calculateResults(room.players);
+        leaderboard.push(...room.players.map(p => ({ name: p.name, score: p.score })));
+        leaderboard = leaderboard.sort((a, b) => b.score - a.score).slice(0, 10);
+        io.to(roomId).emit('game-ended', { results, players: room.players });
+        logger.info(`Game ended in room: ${roomId}`, results);
+        setTimeout(() => roomManager.removeRoom(roomId), 30000);
+    }
 });
 
-// Start server
 server.listen(PORT, () => {
-  console.log(`🚀 Quiz Game Server running on port ${PORT}`);
-  console.log(`📡 Socket.IO server ready`);
+    logger.info(`🚀 Server running on port ${PORT}`);
 });
 
-// Graceful shutdown
+// Cleanup old rooms every 5 minutes
+setInterval(() => roomManager.cleanOldRooms(), 5 * 60 * 1000);
+
 process.on('SIGTERM', () => {
-  console.log('SIGTERM received, shutting down gracefully');
-  server.close(() => {
-    console.log('Process terminated');
-  });
+    logger.info('Shutting down gracefully');
+    server.close(() => process.exit(0));
 });
