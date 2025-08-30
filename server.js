@@ -103,6 +103,7 @@ io.on('connection', (socket) => {
           if (countdown > 0) {
             io.to(roomId).emit('game-starting', { countdown });
           } else {
+            io.to(roomId).emit('game-starting', { countdown: 0 }); // ✅ FIXED: 0 broadcast
             clearInterval(countdownInterval);
             startGameplay(roomId);
           }
