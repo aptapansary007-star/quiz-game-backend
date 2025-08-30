@@ -1,198 +1,78 @@
 const { getRandomInt, shuffleArray } = require('../utils/helpers');
 
 class QuestionGenerator {
-  constructor() {
-    this.usedQuestions = new Set();
-    this.maxCacheSize = 1000;
-  }
-
-  // Generate unique addition question
-  generateAdditionQuestion() {
-    let attempts = 0;
-    let questionKey;
-    
-    do {
-      const num1 = getRandomInt(10, 99);
-      const num2 = getRandomInt(10, 99);
-      questionKey = `${num1}+${num2}`;
-      attempts++;
-    } while (this.usedQuestions.has(questionKey) && attempts < 50);
-    
-    // Parse the numbers from questionKey
-    const [num1, num2] = questionKey.split('+').map(Number);
-    const correct = num1 + num2;
-    
-    // Add to used questions (with size limit)
-    if (this.usedQuestions.size >= this.maxCacheSize) {
-      this.clearUsedQuestions();
+    constructor() {
+        this.usedQuestions = new Set();
+        this.maxCacheSize = 1000;
     }
-    this.usedQuestions.add(questionKey);
-    
-    // Generate distractors
-    const distractors = this.generateDistractors(correct);
-    
-    // Create options and shuffle
-    const options = [correct, ...distractors];
-    shuffleArray(options);
-    
-    return {
-      question: `${num1} + ${num2}`,
-      options: options,
-      correct: correct,
-      type: 'addition',
-      difficulty: this.calculateDifficulty(num1, num2)
-    };
-  }
 
-  // Generate smart distractors
-  generateDistractors(correct) {
-    const distractors = new Set();
-    
-    // Type 1: Close wrong answers (±1 to ±10)
-    const close1 = correct + getRandomInt(1, 5);
-    const close2 = correct - getRandomInt(1, 5);
-    
-    // Type 2: Common mistakes
-    const mistake1 = correct + getRandomInt(10, 20); // Added extra
-    const mistake2 = correct - getRandomInt(6, 15);  // Subtracted instead
-    
-    // Type 3: Calculation errors
-    const error1 = correct + getRandomInt(15, 30);
-    
-    // Collect potential distractors
-    const candidates = [close1, close2, mistake1, mistake2, error1];
-    
-    // Select 3 unique positive distractors
-    for (const candidate of candidates) {
-      if (candidate > 0 && candidate !== correct && distractors.size < 3) {
-        distractors.add(candidate);
-      }
-    }
-    
-    // Fill remaining slots if needed
-    while (distractors.size < 3) {
-      const random = correct + getRandomInt(-25, 25);
-      if (random > 0 && random !== correct) {
-        distractors.add(random);
-      }
-    }
-    
-    return Array.from(distractors).slice(0, 3);
-  }
+    generateAdditionQuestion() {
+        let attempts = 0;
+        let questionKey;
+        let num1, num2;
 
-  // Calculate question difficulty
-  calculateDifficulty(num1, num2) {
-    const sum = num1 + num2;
-    if (sum <= 50) return 'easy';
-    if (sum <= 120) return 'medium';
-    return 'hard';
-  }
+        do {
+            num1 = getRandomInt(10, 99);
+            num2 = getRandomInt(10, 99);
+            questionKey = `${num1}+${num2}`;
+            attempts++;
+        } while (this.usedQuestions.has(questionKey) && attempts < 50);
 
-  // Generate batch of questions
-  generateBatch(count = 20) {
-    const questions = [];
-    for (let i = 0; i < count; i++) {
-      questions.push(this.generateAdditionQuestion());
-    }
-    return questions;
-  }
+        const correct = num1 + num2;
+        if (this.usedQuestions.size >= this.maxCacheSize) {
+            this.clearUsedQuestions();
+        }
+        this.usedQuestions.add(questionKey);
 
-  // Clear used questions cache
-  clearUsedQuestions() {
-    this.usedQuestions.clear();
-  }
+        const distractors = this.generateDistractors(correct);
+        const options = [correct, ...distractors];
+        shuffleArray(options);
 
-  // Get cache stats
-  getCacheStats() {
-    return {
-      usedQuestions: this.usedQuestions.size,
-      maxCacheSize: this.maxCacheSize
-    };
-  }
+        return {
+            question: `${num1} + ${num2}`,
+            options,
+            correct,
+            type: 'addition',
+            difficulty: this.calculateDifficulty(num1, num2)
+        };
+    }
 
-  // Generate question with specific range
-  generateRangedQuestion(minNum = 10, maxNum = 99) {
-    const num1 = getRandomInt(minNum, maxNum);
-    const num2 = getRandomInt(minNum, maxNum);
-    const correct = num1 + num2;
-    
-    const distractors = this.generateDistractors(correct);
-    const options = [correct, ...distractors];
-    shuffleArray(options);
-    
-    return {
-      question: `${num1} + ${num2}`,
-      options: options,
-      correct: correct,
-      type: 'addition',
-      difficulty: this.calculateDifficulty(num1, num2),
-      range: `${minNum}-${maxNum}`
-    };
-  }
+    generateDistractors(correct) {
+        const distractors = new Set();
+        const candidates = [
+            correct + getRandomInt(1, 5),
+            correct - getRandomInt(1, 5),
+            correct + getRandomInt(10, 20),
+            correct - getRandomInt(6, 15),
+            correct + getRandomInt(15, 30)
+        ];
 
-  // Generate time-based question (easier for quick rounds)
-  generateQuickQuestion() {
-    const num1 = getRandomInt(5, 50);
-    const num2 = getRandomInt(5, 50);
-    const correct = num1 + num2;
-    
-    // Simpler distractors for quick games
-    const distractors = [
-      correct + getRandomInt(1, 3),
-      correct - getRandomInt(1, 3),
-      correct + getRandomInt(5, 10)
-    ].filter(d => d > 0);
-    
-    // Ensure we have exactly 3 distractors
-    while (distractors.length < 3) {
-      const d = correct + getRandomInt(-5, 5);
-      if (d > 0 && d !== correct && !distractors.includes(d)) {
-        distractors.push(d);
-      }
-    }
-    
-    const options = [correct, ...distractors.slice(0, 3)];
-    shuffleArray(options);
-    
-    return {
-      question: `${num1} + ${num2}`,
-      options: options,
-      correct: correct,
-      type: 'addition',
-      difficulty: 'quick',
-      isQuick: true
-    };
-  }
+        for (const candidate of candidates) {
+            if (candidate > 0 && candidate !== correct && distractors.size < 3) {
+                distractors.add(candidate);
+            }
+        }
 
-  // Validate generated question
-  validateQuestion(question) {
-    const errors = [];
-    
-    if (!question.question || !question.question.includes('+')) {
-      errors.push('Invalid question format');
+        while (distractors.size < 3) {
+            const random = correct + getRandomInt(-25, 25);
+            if (random > 0 && random !== correct) {
+                distractors.add(random);
+            }
+        }
+
+        return Array.from(distractors).slice(0, 3);
     }
-    
-    if (!Array.isArray(question.options) || question.options.length !== 4) {
-      errors.push('Must have exactly 4 options');
+
+    calculateDifficulty(num1, num2) {
+        const sum = num1 + num2;
+        if (sum <= 50) return 'easy';
+        if (sum <= 120) return 'medium';
+        return 'hard';
     }
-    
-    if (!question.options.includes(question.correct)) {
-      errors.push('Correct answer not in options');
+
+    clearUsedQuestions() {
+        this.usedQuestions.clear();
     }
-    
-    const duplicates = question.options.filter((item, index) => 
-      question.options.indexOf(item) !== index
-    );
-    
-    if (duplicates.length > 0) {
-      errors.push('Duplicate options found');
-    }
-    
-    return {
-      isValid: errors.length === 0,
-      errors: errors
-    };
-  }
 }
 
 module.exports = QuestionGenerator;
